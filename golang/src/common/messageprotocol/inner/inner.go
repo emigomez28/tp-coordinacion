@@ -8,20 +8,79 @@ import (
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/middleware"
 )
 
-func serializeJson(message []interface{}) ([]byte, error) {
-	return json.Marshal(message)
+type Payload struct {
+	ClientID string
+	IsEOF    bool
+	Records  []fruititem.FruitItem
 }
 
-func deserializeJson(message []byte) ([]interface{}, error) {
-	var data []interface{}
-	if err := json.Unmarshal(message, &data); err != nil {
+func NewPayload(clientID string, isEOF bool, records []fruititem.FruitItem) *Payload {
+	return &Payload{
+		ClientID: clientID,
+		IsEOF:    isEOF,
+		Records:  records,
+	}
+}
+
+type InternalMessage struct {
+	ClientID string          `json:"client_id"`
+	IsEOF    bool            `json:"is_eof"`
+	Records  [][]interface{} `json:"records"`
+}
+
+func NewInternalProtocolMessage(clientID string, isEOF bool, records [][]interface{}) InternalMessage {
+	return InternalMessage{
+		ClientID: clientID,
+		IsEOF:    isEOF,
+		Records:  records,
+	}
+}
+
+func SerializeData(clientID string, records []fruititem.FruitItem) (*middleware.Message, error) {
+	pairedRecords := toPairs(records)
+	isEOF := false
+	internalMessage := NewInternalProtocolMessage(clientID, isEOF, pairedRecords)
+	return serialize(internalMessage)
+}
+
+func SerializeEOF(clientID string) (*middleware.Message, error) {
+	pairedRecords := [][]interface{}{}
+	isEOF := true
+	internalMessage := NewInternalProtocolMessage(clientID, isEOF, pairedRecords)
+	return serialize(internalMessage)
+}
+
+func Deserialize(message *middleware.Message) (*Payload, error) {
+	var internalMessage InternalMessage
+	body := []byte(message.Body)
+	err := json.Unmarshal(body, &internalMessage)
+	if err != nil {
 		return nil, err
 	}
-	return data, nil
+
+	records, err := fromPairs(internalMessage.Records)
+	if err != nil {
+		return nil, err
+	}
+
+	clientID := internalMessage.ClientID
+	isEOF := internalMessage.IsEOF
+	return NewPayload(clientID, isEOF, records), nil
 }
 
-func SerializeMessage(fruitRecords []fruititem.FruitItem) (*middleware.Message, error) {
-	data := []interface{}{}
+func serialize(internalMessage InternalMessage) (*middleware.Message, error) {
+	body, err := json.Marshal(internalMessage)
+	if err != nil {
+		return nil, err
+	}
+
+	msg := middleware.Message{Body: string(body)}
+
+	return &msg, nil
+}
+
+func toPairs(fruitRecords []fruititem.FruitItem) [][]interface{} {
+	data := [][]interface{}{}
 	for _, fruitRecord := range fruitRecords {
 		datum := []interface{}{
 			fruitRecord.Fruit,
@@ -30,41 +89,29 @@ func SerializeMessage(fruitRecords []fruititem.FruitItem) (*middleware.Message, 
 		data = append(data, datum)
 	}
 
-	body, err := serializeJson(data)
-	if err != nil {
-		return nil, err
-	}
-	message := middleware.Message{Body: string(body)}
-
-	return &message, nil
+	return data
 }
 
-func DeserializeMessage(message *middleware.Message) ([]fruititem.FruitItem, bool, error) {
-	data, err := deserializeJson([]byte((*message).Body))
-	if err != nil {
-		return nil, false, err
-	}
-
+func fromPairs(records [][]interface{}) ([]fruititem.FruitItem, error) {
 	fruitRecords := []fruititem.FruitItem{}
-	for _, datum := range data {
-		fruitPair, ok := datum.([]interface{})
-		if !ok {
-			return nil, false, errors.New("Datum is not an array")
-		}
+	for _, fruitPair := range records {
 
+		if len(fruitPair) != 2 {
+			return nil, errors.New("Fruit pair len must be at least 2")
+		}
 		fruit, ok := fruitPair[0].(string)
 		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
+			return nil, errors.New("Datum is not a (fruit, amount) pair")
 		}
 
 		fruitAmount, ok := fruitPair[1].(float64)
 		if !ok {
-			return nil, false, errors.New("Datum is not a (fruit, amount) pair")
+			return nil, errors.New("Datum is not a (fruit, amount) pair")
 		}
 
 		fruitRecord := fruititem.FruitItem{Fruit: fruit, Amount: uint32(fruitAmount)}
 		fruitRecords = append(fruitRecords, fruitRecord)
 	}
 
-	return fruitRecords, len(fruitRecords) == 0, nil
+	return fruitRecords, nil
 }

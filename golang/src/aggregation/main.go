@@ -56,7 +56,7 @@ func loadConfig() (aggregation.AggregationConfig, error) {
 	}
 
 	return aggregation.AggregationConfig{
-		Id:                id,
+		ID:                id,
 		MomHost:           momHost,
 		MomPort:           momPort,
 		OutputQueue:       outputQueue,

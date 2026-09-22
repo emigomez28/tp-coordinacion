@@ -51,7 +51,7 @@ func loadConfig() (sum.SumConfig, error) {
 	}
 
 	return sum.SumConfig{
-		Id:                id,
+		ID:                id,
 		MomHost:           momHost,
 		MomPort:           momPort,
 		InputQueue:        inputQueue,
