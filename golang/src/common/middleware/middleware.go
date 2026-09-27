@@ -41,4 +41,6 @@ type Middleware interface {
 	// Se desconecta de la cola o exchange al que estaba conectado.
 	// Si ocurre un error interno que no puede resolverse devuelve ErrMessageMiddlewareClose.
 	Close() error
+
+	SendTo(msg Message, routingKey string) error
 }

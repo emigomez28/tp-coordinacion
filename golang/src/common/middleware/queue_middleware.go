@@ -126,28 +126,43 @@ func (qm *QueueMiddleware) Send(msg Message) error {
 		return ErrMessageMiddlewareDisconnected
 	}
 
-	routingKey := qm.queue.Name
-	publishMsg := getPublishMessage(msg.Body)
-
-	err := qm.channel.PublishWithContext(
-		context.Background(),
-		_DEFAULT_EXCHANGE,
-		routingKey,
-		_PUBLISH_MANDATORY,
-		_PUBLISH_IMMEDIATE,
-		publishMsg,
-	)
-	if err != nil {
-		return ErrMessageMiddlewareMessage
-	}
-
-	return nil
+	return qm.publish(msg.Body, qm.queue.Name)
 }
 
 func (qm *QueueMiddleware) Close() error {
 	err := qm.conn.Close()
 	if err != nil {
 		return ErrMessageMiddlewareClose
+	}
+
+	return nil
+}
+
+func (qm *QueueMiddleware) SendTo(msg Message, routingKey string) error {
+	if qm.conn.IsClosed() {
+		return ErrMessageMiddlewareDisconnected
+	}
+
+	if routingKey != qm.queue.Name {
+		return ErrMessageMiddlewareMessage
+	}
+
+	return qm.publish(msg.Body, routingKey)
+}
+
+func (qm *QueueMiddleware) publish(body string, queueName string) error {
+	publishMsg := getPublishMessage(body)
+
+	err := qm.channel.PublishWithContext(
+		context.Background(),
+		_DEFAULT_EXCHANGE,
+		queueName,
+		_PUBLISH_MANDATORY,
+		_PUBLISH_IMMEDIATE,
+		publishMsg,
+	)
+	if err != nil {
+		return ErrMessageMiddlewareMessage
 	}
 
 	return nil

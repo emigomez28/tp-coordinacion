@@ -133,19 +133,10 @@ func (em *ExchangeMiddleware) Send(msg Message) error {
 		return ErrMessageMiddlewareDisconnected
 	}
 
-	publishMsg := getPublishMessage(msg.Body)
-
 	for _, routingKey := range em.keys {
-		err := em.channel.PublishWithContext(
-			context.Background(),
-			em.exchange,
-			routingKey,
-			_PUBLISH_MANDATORY,
-			_PUBLISH_IMMEDIATE,
-			publishMsg,
-		)
+		err := em.publish(msg.Body, routingKey)
 		if err != nil {
-			return ErrMessageMiddlewareMessage
+			return err
 		}
 	}
 
@@ -156,6 +147,46 @@ func (em *ExchangeMiddleware) Close() error {
 	err := em.conn.Close()
 	if err != nil {
 		return ErrMessageMiddlewareClose
+	}
+
+	return nil
+}
+
+func (em *ExchangeMiddleware) SendTo(msg Message, routingKey string) error {
+	if em.conn.IsClosed() {
+		return ErrMessageMiddlewareDisconnected
+	}
+
+	if !em.containsKey(routingKey) {
+		return ErrMessageMiddlewareMessage
+	}
+
+	return em.publish(msg.Body, routingKey)
+}
+
+func (em *ExchangeMiddleware) containsKey(routingKey string) bool {
+	for _, key := range em.keys {
+		if key == routingKey {
+			return true
+		}
+	}
+	return false
+}
+
+func (em *ExchangeMiddleware) publish(body string, routingKey string) error {
+	publishMsg := getPublishMessage(body)
+
+	ctx := context.Background()
+	err := em.channel.PublishWithContext(
+		ctx,
+		em.exchange,
+		routingKey,
+		_PUBLISH_MANDATORY,
+		_PUBLISH_IMMEDIATE,
+		publishMsg,
+	)
+	if err != nil {
+		return ErrMessageMiddlewareMessage
 	}
 
 	return nil
