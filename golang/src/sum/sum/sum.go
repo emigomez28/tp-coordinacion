@@ -2,6 +2,7 @@ package sum
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
@@ -29,8 +30,10 @@ type Sum struct {
 	inputQueue     middleware.Middleware
 	outputExchange middleware.Middleware
 
-	sumAmount     int
-	itemsByClient map[string]*clientItems
+	sumAmount         int
+	aggregationAmount int
+	aggregationPrefix string
+	itemsByClient     map[string]*clientItems
 }
 
 func NewSum(config SumConfig) (*Sum, error) {
@@ -48,20 +51,26 @@ func NewSum(config SumConfig) (*Sum, error) {
 	}
 
 	return &Sum{
-		inputQueue:     inputQueue,
-		outputExchange: outputExchange,
-		sumAmount:      config.SumAmount,
-		itemsByClient:  map[string]*clientItems{},
+		inputQueue:        inputQueue,
+		outputExchange:    outputExchange,
+		sumAmount:         config.SumAmount,
+		aggregationAmount: config.AggregationAmount,
+		aggregationPrefix: config.AggregationPrefix,
+		itemsByClient:     map[string]*clientItems{},
 	}, nil
 }
 
 func createExchangeWithRoutingKeys(amount int, prefix string, connSettings middleware.ConnSettings) (middleware.Middleware, error) {
 	routingKeys := make([]string, amount)
 	for i := range amount {
-		routingKeys[i] = fmt.Sprintf("%s_%d", prefix, i)
+		routingKeys[i] = getAggregationRoutingKey(prefix, i)
 	}
 
 	return middleware.CreateExchangeMiddleware(prefix, routingKeys, connSettings)
+}
+
+func getAggregationRoutingKey(prefix string, shard int) string {
+	return fmt.Sprintf("%s_%d", prefix, shard)
 }
 
 func (sum *Sum) Run() {
@@ -166,18 +175,41 @@ func (sum *Sum) askPeersToEmit(clientID string, copies int) error {
 }
 
 func (sum *Sum) sendTotals(clientID string, state *clientItems) error {
-	for _, fruitItem := range state.items {
-		records := []fruititem.FruitItem{fruitItem}
+	err := sum.sendRecordsByShard(clientID, state.items)
+	if err != nil {
+		return err
+	}
+
+	return sum.broadcastEndOfRecords(clientID)
+}
+
+func (sum *Sum) sendRecordsByShard(clientID string, items map[string]fruititem.FruitItem) error {
+	recordsByShard := sum.groupByShard(items)
+
+	for shard, records := range recordsByShard {
+		if len(records) == 0 {
+			continue
+		}
+
 		dataMsg := inner.NewDataMessage(clientID, records)
 		msg, err := inner.Serialize(dataMsg)
 		if err != nil {
 			return err
 		}
-		if err := sum.outputExchange.Send(*msg); err != nil {
+
+		prefix := sum.aggregationPrefix
+		routingKey := getAggregationRoutingKey(prefix, shard)
+
+		err = sum.outputExchange.SendTo(*msg, routingKey)
+		if err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+func (sum *Sum) broadcastEndOfRecords(clientID string) error {
 	innerEOFMsg := inner.NewEndOfRecordsMessage(clientID)
 	eofMsg, err := inner.Serialize(innerEOFMsg)
 	if err != nil {
@@ -185,4 +217,23 @@ func (sum *Sum) sendTotals(clientID string, state *clientItems) error {
 	}
 
 	return sum.outputExchange.Send(*eofMsg)
+}
+
+func (sum *Sum) groupByShard(items map[string]fruititem.FruitItem) [][]fruititem.FruitItem {
+	recordsByShard := make([][]fruititem.FruitItem, sum.aggregationAmount)
+	for _, fruitItem := range items {
+		shard := sum.getShardFor(fruitItem.Fruit)
+		recordsByShard[shard] = append(recordsByShard[shard], fruitItem)
+	}
+	return recordsByShard
+}
+
+func (sum *Sum) getShardFor(fruit string) int {
+	hash := fnv.New32a()
+	fruitAsBytes := []byte(fruit)
+	hash.Write(fruitAsBytes)
+
+	aggAmount := uint32(sum.aggregationAmount)
+	shard := int(hash.Sum32() % aggAmount)
+	return shard
 }
