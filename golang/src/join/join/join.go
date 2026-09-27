@@ -58,55 +58,76 @@ func NewJoin(config JoinConfig) (*Join, error) {
 }
 
 func (join *Join) Run() {
-	join.inputQueue.StartConsuming(func(msg middleware.Message, ack, nack func()) {
-		join.handleMessage(msg, ack, nack)
+	join.inputQueue.StartConsuming(func(message middleware.Message, ack, nack func()) {
+		join.handleMessage(message, ack, nack)
 	})
 }
 
-func (join *Join) handleMessage(msg middleware.Message, ack func(), nack func()) {
+func (join *Join) VisitData(message *inner.DataMessage) error {
+	join.handleDataMessage(message.ClientID(), message.Records())
+
+	return nil
+}
+
+func (join *Join) VisitEndOfRecords(message *inner.EndOfRecordsMessage) error {
+	return join.handleEndOfRecordsMessage(message.ClientID())
+}
+
+func (join *Join) VisitEmitTotals(message *inner.EmitTotalsMessage) error {
+	return inner.NewUnexpectedMessageError("join", message)
+}
+
+func (join *Join) handleMessage(message middleware.Message, ack func(), nack func()) {
 	defer ack()
-	payload, err := inner.Deserialize(&msg)
+
+	innerMessage, err := inner.Deserialize(&message)
 	if err != nil {
 		slog.Error("While deserializing message", "err", err)
 		return
 	}
 
-	state := join.getClientTops(payload.ClientID)
-
-	if !payload.IsEOF {
-		for _, item := range payload.Records {
-			curr, ok := state.items[item.Fruit]
-			if ok {
-				state.items[item.Fruit] = curr.Sum(item)
-			} else {
-				state.items[item.Fruit] = item
-			}
-		}
-		return
+	if err := innerMessage.Accept(join); err != nil {
+		slog.Error("While handling inner message", "err", err)
 	}
+}
 
+func (join *Join) handleDataMessage(clientID string, fruitRecords []fruititem.FruitItem) {
+	state := join.getClientTops(clientID)
+	for _, fruitRecord := range fruitRecords {
+		curr, ok := state.items[fruitRecord.Fruit]
+		if ok {
+			state.items[fruitRecord.Fruit] = curr.Sum(fruitRecord)
+		} else {
+			state.items[fruitRecord.Fruit] = fruitRecord
+		}
+	}
+}
+
+func (join *Join) handleEndOfRecordsMessage(clientID string) error {
+	state := join.getClientTops(clientID)
 	state.eofCount++
 	if state.eofCount < join.aggregationAmount {
-		return
-	}
-	err = join.sendFinalTop(payload.ClientID, state)
-	if err != nil {
-		slog.Error("While sending final top", "err", err)
+		return nil
 	}
 
-	delete(join.topsByClient, payload.ClientID)
+	err := join.sendFinalTop(clientID, state)
+	delete(join.topsByClient, clientID)
+
+	return err
 }
 
 func (join *Join) getClientTops(clientID string) *clientTops {
 	state, ok := join.topsByClient[clientID]
 	if !ok {
-		state = &clientTops{
-			items: map[string]fruititem.FruitItem{},
-		}
+		state = newClientTops()
 		join.topsByClient[clientID] = state
 	}
 
 	return state
+}
+
+func newClientTops() *clientTops {
+	return &clientTops{items: map[string]fruititem.FruitItem{}}
 }
 
 func (join *Join) sendFinalTop(clientID string, state *clientTops) error {
@@ -116,7 +137,8 @@ func (join *Join) sendFinalTop(clientID string, state *clientTops) error {
 	}
 
 	topItems := fruittop.BuildFruitTop(items, join.topSize)
-	msg, err := inner.SerializeData(clientID, topItems)
+	dataMsg := inner.NewDataMessage(clientID, topItems)
+	msg, err := inner.Serialize(dataMsg)
 	if err != nil {
 		return err
 	}

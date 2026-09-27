@@ -22,23 +22,28 @@ func newClientID() string {
 }
 
 func (messageHandler *MessageHandler) SerializeDataMessage(fruitRecord fruititem.FruitItem) (*middleware.Message, error) {
-	data := []fruititem.FruitItem{fruitRecord}
-	return inner.SerializeData(messageHandler.clientID, data)
+	records := []fruititem.FruitItem{fruitRecord}
+	dataMsg := inner.NewDataMessage(messageHandler.clientID, records)
+
+	return inner.Serialize(dataMsg)
 }
 
 func (messageHandler *MessageHandler) SerializeEOFMessage() (*middleware.Message, error) {
-	return inner.SerializeEOF(messageHandler.clientID)
+	eofMsg := inner.NewEndOfRecordsMessage(messageHandler.clientID)
+
+	return inner.Serialize(eofMsg)
 }
 
 func (messageHandler *MessageHandler) DeserializeResultMessage(message *middleware.Message) ([]fruititem.FruitItem, error) {
-	payload, err := inner.Deserialize(message)
+	innerMessage, err := inner.Deserialize(message)
 	if err != nil {
 		return nil, err
 	}
 
-	if payload.ClientID != messageHandler.clientID {
-		return nil, nil
+	visitor := newResultVisitor(messageHandler.clientID)
+	if err := innerMessage.Accept(visitor); err != nil {
+		return nil, err
 	}
 
-	return payload.Records, nil
+	return visitor.records, nil
 }
