@@ -81,7 +81,10 @@ func run() int {
 		return 1
 	}
 
-	server.Run()
+	if err := server.Run(); err != nil {
+		slog.Error("Join exited with error", "err", err)
+		return 1
+	}
 	return 0
 }
 

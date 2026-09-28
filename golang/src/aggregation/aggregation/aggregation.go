@@ -3,6 +3,9 @@ package aggregation
 import (
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruittop"
@@ -59,10 +62,26 @@ func NewAggregation(config AggregationConfig) (*Aggregation, error) {
 	}, nil
 }
 
-func (aggregation *Aggregation) Run() {
-	aggregation.inputExchange.StartConsuming(func(message middleware.Message, ack, nack func()) {
+func (aggregation *Aggregation) Run() error {
+	go aggregation.handleSignals()
+	defer aggregation.closeMiddlewares()
+
+	return aggregation.inputExchange.StartConsuming(func(message middleware.Message, ack, nack func()) {
 		aggregation.handleMessage(message, ack, nack)
 	})
+}
+
+func (aggregation *Aggregation) handleSignals() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	slog.Info("SIGTERM signal received")
+	aggregation.inputExchange.StopConsuming()
+}
+
+func (aggregation *Aggregation) closeMiddlewares() {
+	aggregation.inputExchange.Close()
+	aggregation.outputQueue.Close()
 }
 
 func (aggregation *Aggregation) VisitData(message *inner.DataMessage) error {
@@ -141,11 +160,15 @@ func (aggregation *Aggregation) handleDataMessage(clientID string, fruitRecords 
 func (aggregation *Aggregation) getClientItems(clientID string) *clientItems {
 	state, ok := aggregation.itemsByClient[clientID]
 	if !ok {
-		state = &clientItems{items: map[string]fruititem.FruitItem{}}
+		state = newClientItems()
 		aggregation.itemsByClient[clientID] = state
 	}
 
 	return state
+}
+
+func newClientItems() *clientItems {
+	return &clientItems{items: map[string]fruititem.FruitItem{}}
 }
 
 func (aggregation *Aggregation) buildFruitTop(state *clientItems) []fruititem.FruitItem {

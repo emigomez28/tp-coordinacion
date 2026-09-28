@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/fruititem"
 	"github.com/7574-sistemas-distribuidos/tp-coordinacion/common/messageprotocol/inner"
@@ -73,10 +76,26 @@ func getAggregationRoutingKey(prefix string, shard int) string {
 	return fmt.Sprintf("%s_%d", prefix, shard)
 }
 
-func (sum *Sum) Run() {
-	sum.inputQueue.StartConsuming(func(message middleware.Message, ack, nack func()) {
+func (sum *Sum) Run() error {
+	go sum.handleSignals()
+	defer sum.closeMiddlewares()
+
+	return sum.inputQueue.StartConsuming(func(message middleware.Message, ack, nack func()) {
 		sum.handleMessage(message, ack, nack)
 	})
+}
+
+func (sum *Sum) handleSignals() {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+	<-signals
+	slog.Info("SIGTERM signal received")
+	sum.inputQueue.StopConsuming()
+}
+
+func (sum *Sum) closeMiddlewares() {
+	sum.inputQueue.Close()
+	sum.outputExchange.Close()
 }
 
 func (sum *Sum) VisitData(message *inner.DataMessage) error {
