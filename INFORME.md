@@ -58,9 +58,9 @@ La idea de implementar un visitor se da por que Go no tiene estructura `switch-c
 
 `Aggregation` y `Join` implementan `VisitEmitTotals` devolviendo `NewUnexpectedMessageError` ya que ese mensaje nunca sale de `input_queue`, y si aparece allí implica que hay un error en la configuración.
 
-## 5. Coordinación
+## 4. Coordinación
 
-### 5.1 Aislamiento por cliente
+### 4.1 Aislamiento por cliente
 
 El `clientID` se asigna en el borde de entrada al sistema (el gateway) y viaja en **todos** los mensajes del protocolo interno. Cada nodo mantiene estado indexado por cliente:
 
@@ -70,7 +70,7 @@ El `clientID` se asigna en el borde de entrada al sistema (el gateway) y viaja e
 `Aggregation` y `Join` borran la entrada al emitir su resultado.
 
 
-### 5.2 Coordinación entre instancias de `Sum`
+### 4.2 Coordinación entre instancias de `Sum`
 
 Como las réplicas son consumidoras en competencia de `input_queue`, cada una acumulaba una parte de los registros. Luego, como el fin de archivo entra al sistema como **un solo** mensaje `eof` por cliente, que consume **una sola** réplica, las otras nunca vaciaban su estado y se perdían sus totales parciales. Entonces, por esto se devolvían tops incompletos.
 
@@ -84,7 +84,7 @@ Una versión anterior hacía el fan-out por un exchange `sum` dedicado. Funciona
 
 Al poner el aviso **dentro de `input_queue`**, se publica necesariamente después de todos los registros del cliente, y RabbitMQ entrega en orden de publicación.
 
-### 5.3 Coordinación entre instancias de `Sum` y `Aggregation`
+### 4.3 Coordinación entre instancias de `Sum` y `Aggregation`
 
 Las instancias de `Aggregation` necesitan dos políticas de ruteo **sobre el mismo exchange**:
 
@@ -99,15 +99,15 @@ En cambio, los datos y el `eof` de **una misma** réplica salen por la misma ins
 
 Agrupar por shard trajo mejoras ya que `sendTotals` pasó de publicar un mensaje AMQP **por fruta** a uno **por shard** lo que redujo significativamente la cantidad de mensajes debido a que la cantidad de frutas es mucho mayor que la cantidad de shards.
 
-### 5.4 Coordinación entre instancias de `Aggregation` y `Join`
+### 4.4 Coordinación entre instancias de `Aggregation` y `Join`
 
 `Join` espera `AGGREGATION_AMOUNT` mensajes `eof` por cliente, acumula sumando por fruta y emite el top final. La decisión de diseño es que este borde **reusa el mismo mecanismo** que el anterior, una etapa sabe que su entrada está completa cuando contó tantos `eof` como instancias tiene la etapa que la precede. El único parámetro que cambia es la cardinalidad.
 
 Eso mantiene a `Aggregation` y a `Join` con la misma forma y hace que ninguna de las dos dependa del orden en que llegan sus predecesoras.
 
-## 6. Escalabilidad
+## 5. Escalabilidad
 
-### 6.1 Respecto de los clientes
+### 5.1 Respecto de los clientes
 
 El `clientID` viaja en **todos** los mensajes del protocolo interno y cada nodo mantiene su estado indexado por cliente. Ninguna consulta comparte estado con otra, así que se resuelven concurrentemente sin coordinación adicional, la concurrencia la da el middleware y los nodos sólo tienen que no mezclar.
 
@@ -115,7 +115,7 @@ Luego, el estado de un cliente se libera en cuanto se emite su resultado, de mod
 
 El fin de archivo también es por cliente, cada `eof` y cada conteo están atados a un `clientID`, así que un cliente que termina no interfiere con otro que todavía está enviando.
 
-### 6.2 Respecto de grandes volúmenes de datos
+### 5.2 Respecto de grandes volúmenes de datos
 
 La propiedad importante es que **la agregación es incremental**. `Sum`  guarda un acumulador por fruta y `Aggregation` hace lo mismo sobre su partición, entonces, la memoria de cada nodo es proporcional a la cantidad de **frutas distintas** por cliente activo. Esto implica que un dataset diez veces más grande no cambia la memoria de ningún nodo.
 
@@ -129,7 +129,7 @@ Como consecuencia, el tráfico interno tampoco crece con el volumen:
 | `Join` ->  salida | 1 top | no |
 
 
-### 6.3 Respecto de la cantidad de nodos 
+### 5.3 Respecto de la cantidad de nodos 
 
 Cada nodo conoce lo mínimo indispensable del resto:
 
@@ -146,7 +146,7 @@ Ninguno conoce la identidad de sus pares, sólo **cuántos** son. Ningún nombre
 Los mecanismos además resuelven correctamente el caso trivial, con una sola instancia no hay avisos que
 publicar y el particionamiento tiene una sola partición.
 
-## 7. Manejo de señales
+## 6. Manejo de señales
 
 Los tres nodos registran `SIGINT`/`SIGTERM` en una goroutine dedicada y responden llamando a
 `StopConsuming()`, **no a `Close()`**.
